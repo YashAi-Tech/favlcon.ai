@@ -50,9 +50,15 @@ export const Route = createFileRoute("/api/generate")({
   server: {
     handlers: {
       POST: async ({ request }) => {
-        const key = process.env["LOVABLE_API_KEY"];
+        const lovableKey = process.env["LOVABLE_API_KEY"];
+        const openaiKey = process.env["OPENAI_API_KEY"];
+        const key = lovableKey || openaiKey;
+
         if (!key) {
-          return Response.json({ error: "AI is not configured for this app yet." }, { status: 500 });
+          return Response.json(
+            { error: "AI is not configured for this app yet. Please set LOVABLE_API_KEY or OPENAI_API_KEY in your environment variables." },
+            { status: 500 },
+          );
         }
 
         const { prompt, image } = (await request.json()) as {
@@ -64,11 +70,15 @@ export const Route = createFileRoute("/api/generate")({
           return Response.json({ error: "Please describe what to build." }, { status: 400 });
         }
 
-        const lovable = createOpenAI({
-          baseURL: "https://ai.gateway.lovable.dev/v1",
-          apiKey: key,
-          headers: { "Lovable-API-Key": key, "X-Lovable-AIG-SDK": "vercel-ai-sdk" },
-        });
+        const ai = lovableKey
+          ? createOpenAI({
+              baseURL: "https://ai.gateway.lovable.dev/v1",
+              apiKey: lovableKey,
+              headers: { "Lovable-API-Key": lovableKey, "X-Lovable-AIG-SDK": "vercel-ai-sdk" },
+            })
+          : createOpenAI({
+              apiKey: openaiKey,
+            });
 
         const content: Array<Record<string, unknown>> = [{ type: "text", text: prompt }];
         if (image && image.startsWith("data:image/")) {
@@ -76,8 +86,12 @@ export const Route = createFileRoute("/api/generate")({
         }
 
         try {
+          const model = lovableKey
+            ? ai.responses("openai/gpt-6-astra")
+            : ai("gpt-4o");
+
           const result = streamText({
-            model: lovable.responses("openai/gpt-6-astra"),
+            model,
             system: SYSTEM,
             // eslint-disable-next-line @typescript-eslint/no-explicit-any
             messages: [{ role: "user", content: content as any }],
