@@ -50,35 +50,70 @@ export const Route = createFileRoute("/api/generate")({
   server: {
     handlers: {
       POST: async ({ request }) => {
-        const lovableKey = process.env["LOVABLE_API_KEY"];
-        const openaiKey = process.env["OPENAI_API_KEY"];
-        const key = lovableKey || openaiKey;
-
-        if (!key) {
-          return Response.json(
-            { error: "AI is not configured for this app yet. Please set LOVABLE_API_KEY or OPENAI_API_KEY in your environment variables." },
-            { status: 500 },
-          );
-        }
-
-        const { prompt, image } = (await request.json()) as {
+        const body = (await request.json()) as {
           prompt?: string;
           image?: string | null;
+          model?: string;
         };
+
+        const { prompt, image, model } = body;
 
         if (!prompt || !prompt.trim()) {
           return Response.json({ error: "Please describe what to build." }, { status: 400 });
         }
 
-        const ai = lovableKey
+        const fastapiUrl = process.env["FASTAPI_URL"] || "http://127.0.0.1:8000";
+
+        // Try calling FastAPI backend first if available
+        try {
+          const fastApiResponse = await fetch(`${fastapiUrl}/api/generate`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ prompt, image, model }),
+            signal: AbortSignal.timeout(60000),
+          });
+
+          if (fastApiResponse.ok) {
+            const result = await fastApiResponse.json();
+            return Response.json(result);
+          }
+        } catch {
+          // FastAPI backend not running or timed out; continue to fallback direct AI call
+        }
+
+        const openrouterKey = process.env["OPENROUTER_API_KEY"];
+        const lovableKey = process.env["LOVABLE_API_KEY"];
+        const openaiKey = process.env["OPENAI_API_KEY"];
+        const key = openrouterKey || lovableKey || openaiKey;
+
+        if (!key) {
+          return Response.json(
+            {
+              error:
+                "AI is not configured. Please set OPENROUTER_API_KEY, LOVABLE_API_KEY or OPENAI_API_KEY in your environment variables.",
+            },
+            { status: 500 },
+          );
+        }
+
+        const ai = openrouterKey
           ? createOpenAI({
-              baseURL: "https://ai.gateway.lovable.dev/v1",
-              apiKey: lovableKey,
-              headers: { "Lovable-API-Key": lovableKey, "X-Lovable-AIG-SDK": "vercel-ai-sdk" },
+              baseURL: "https://openrouter.ai/api/v1",
+              apiKey: openrouterKey,
+              headers: {
+                "HTTP-Referer": "http://localhost:5173",
+                "X-Title": "Favlicon Prompt Art Studio",
+              },
             })
-          : createOpenAI({
-              apiKey: openaiKey,
-            });
+          : lovableKey
+            ? createOpenAI({
+                baseURL: "https://ai.gateway.lovable.dev/v1",
+                apiKey: lovableKey,
+                headers: { "Lovable-API-Key": lovableKey, "X-Lovable-AIG-SDK": "vercel-ai-sdk" },
+              })
+            : createOpenAI({
+                apiKey: openaiKey,
+              });
 
         const content: Array<Record<string, unknown>> = [{ type: "text", text: prompt }];
         if (image && image.startsWith("data:image/")) {
@@ -86,24 +121,17 @@ export const Route = createFileRoute("/api/generate")({
         }
 
         try {
-          const model = lovableKey
-            ? ai.responses("openai/gpt-6-astra")
-            : ai("gpt-4o");
+          const selectedModel = openrouterKey
+            ? (model || "google/gemini-2.5-flash")
+            : lovableKey
+              ? "openai/gpt-6-astra"
+              : "gpt-4o";
 
           const result = streamText({
-            model,
+            model: ai(selectedModel),
             system: SYSTEM,
             // eslint-disable-next-line @typescript-eslint/no-explicit-any
             messages: [{ role: "user", content: content as any }],
-            providerOptions: {
-              openai: {
-                store: false,
-                forceReasoning: true,
-                reasoningEffort: "low",
-                reasoningSummary: "auto",
-                include: ["reasoning.encrypted_content"],
-              },
-            },
             abortSignal: request.signal,
           });
 
@@ -113,7 +141,7 @@ export const Route = createFileRoute("/api/generate")({
           const description = section(text, "DESCRIPTION", "CODE");
           const code = section(text, "CODE").replace(/^```(?:jsx|js|tsx)?\s*|```$/g, "").trim();
 
-          if (!code.includes("function App")) {
+          if (!code.includes("function App") && !code.includes("const App")) {
             return Response.json(
               { error: "The AI returned an unusable result. Try again with more detail." },
               { status: 502 },
