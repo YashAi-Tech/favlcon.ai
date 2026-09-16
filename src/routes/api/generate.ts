@@ -2,22 +2,48 @@ import { createFileRoute } from "@tanstack/react-router";
 import { createOpenAI } from "@ai-sdk/openai";
 import { streamText } from "ai";
 
-const SYSTEM = `You are a senior product designer and front-end engineer.
-Return ONE complete, self-contained HTML document that renders a beautiful, modern, responsive website for the user's request.
+const SYSTEM = `You are an elite front-end engineer and art director. You build complete, highly graphical, animated MULTI-PAGE React websites.
 
-Hard rules:
-- Output ONLY raw HTML. No markdown fences, no commentary.
-- Everything inline: <style> in <head>, any JS in <script>. No external files except Google Fonts and https://cdn.tailwindcss.com.
-- Use a distinctive, cohesive visual direction (no generic purple-on-white templates).
-- Use real, specific copy — never lorem ipsum.
-- Images: use https://images.unsplash.com/... URLs or CSS gradients.
-- Make it fully responsive and accessible.
-If an image is attached, treat it as the design/content reference and match its layout, palette and structure closely.`;
+Reply in EXACTLY this format, nothing else:
 
-function stripFences(text: string) {
-  const fenced = text.match(/```(?:html)?\s*([\s\S]*?)```/i);
-  const body = fenced?.[1] ?? text;
-  return body.trim();
+<<<TITLE>>>
+Site name
+<<<SLUG>>>
+kebab-case-slug
+<<<DESCRIPTION>>>
+One sentence describing the site.
+<<<CODE>>>
+(JSX only)
+
+CODE rules — the JSX runs in the browser via Babel, so:
+- NO import/export statements, NO TypeScript, NO markdown fences.
+- React and the hooks useState, useEffect, useRef, useMemo, useCallback are already in scope.
+- A helper "useHashRoute()" is in scope: const [route, go] = useHashRoute(); route is like "/" or "/about"; call go("/about") to navigate.
+- You MUST define "function App() { ... }" as the root component. It renders a shared header nav + footer and switches between at least 4 distinct page components (e.g. Home, About/Services, Work/Features, Contact) based on route.
+- Every page is rich and graphical: big hero, layered gradients, glassmorphism, grid/bento sections, testimonials, stats, FAQ, CTA, real specific copy (never lorem ipsum).
+- Tailwind (CDN) is available for all styling. Use it heavily and cohesively; pick a bold distinctive palette (avoid generic purple-on-white).
+- Animation is required: use the ready-made classes "anim-fade-up", "anim-float", "anim-shimmer", and "reveal" (reveal elements animate in on scroll automatically), plus Tailwind transitions/hover effects and CSS keyframes in inline <style> if needed.
+- Add interactivity: mobile menu toggle, accordions, tabs, carousels, hover states, working contact form with local state.
+- Images: use https://images.unsplash.com/... URLs or pure CSS gradients/SVG.
+- Must be fully responsive and accessible (alt text, buttons, labels).
+- Self-contained: no external JS libraries beyond what is in scope.`;
+
+function section(text: string, tag: string, next?: string) {
+  const start = text.indexOf(`<<<${tag}>>>`);
+  if (start === -1) return "";
+  const from = start + tag.length + 6;
+  const end = next ? text.indexOf(`<<<${next}>>>`, from) : -1;
+  return text.slice(from, end === -1 ? undefined : end).trim();
+}
+
+function slugify(value: string) {
+  return (
+    value
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, "-")
+      .replace(/^-+|-+$/g, "")
+      .slice(0, 48) || "site"
+  );
 }
 
 export const Route = createFileRoute("/api/generate")({
@@ -26,10 +52,7 @@ export const Route = createFileRoute("/api/generate")({
       POST: async ({ request }) => {
         const key = process.env["LOVABLE_API_KEY"];
         if (!key) {
-          return Response.json(
-            { error: "AI is not configured for this app yet." },
-            { status: 500 },
-          );
+          return Response.json({ error: "AI is not configured for this app yet." }, { status: 500 });
         }
 
         const { prompt, image } = (await request.json()) as {
@@ -44,10 +67,7 @@ export const Route = createFileRoute("/api/generate")({
         const lovable = createOpenAI({
           baseURL: "https://ai.gateway.lovable.dev/v1",
           apiKey: key,
-          headers: {
-            "Lovable-API-Key": key,
-            "X-Lovable-AIG-SDK": "vercel-ai-sdk",
-          },
+          headers: { "Lovable-API-Key": key, "X-Lovable-AIG-SDK": "vercel-ai-sdk" },
         });
 
         const content: Array<Record<string, unknown>> = [{ type: "text", text: prompt }];
@@ -74,14 +94,19 @@ export const Route = createFileRoute("/api/generate")({
           });
 
           const text = await result.text;
-          const html = stripFences(text);
-          if (!html) {
+          const title = section(text, "TITLE", "SLUG") || "Untitled site";
+          const slug = slugify(section(text, "SLUG", "DESCRIPTION") || title);
+          const description = section(text, "DESCRIPTION", "CODE");
+          const code = section(text, "CODE").replace(/^```(?:jsx|js|tsx)?\s*|```$/g, "").trim();
+
+          if (!code.includes("function App")) {
             return Response.json(
-              { error: "The AI returned an empty result. Try again with more detail." },
+              { error: "The AI returned an unusable result. Try again with more detail." },
               { status: 502 },
             );
           }
-          return Response.json({ html });
+
+          return Response.json({ title, slug, description, code });
         } catch (error) {
           if (request.signal.aborted) return new Response(null, { status: 499 });
           const message = error instanceof Error ? error.message : "Generation failed.";
